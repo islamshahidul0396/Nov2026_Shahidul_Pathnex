@@ -1,77 +1,102 @@
-# Day 25 - Lineinfile, Key Pair, Multi-Container, File Count
+# Day 24 - Template, ALB Listener, PV/PVC, Menu System
 
-## Ansible - Modify Existing Line
+## Ansible - Deploy Config Using Template
 
 ---
-- name: Update SSH config for Pathnex
+- name: Deploy Pathnex template
   hosts: all
   become: yes
 
+
   tasks:
-    - name: Disable root login
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*#?\s*PermitRootLogin'
-        line: 'PermitRootLogin no'
-        state: present
-        backup: yes
-      notify: Restart SSH
+    - name: Create config
+      template:
+        src: pathnex.config.j2
+        dest: /etc/pathnex.conf
 
-  handlers:
-    - name: Restart SSH
-      service:
-        name: sshd
-        state: restarted
 
-## Terraform - EC2 Key Pair Output
+## Terraform - ALB Listener
 
-resource "aws_key_pair" "PathnexKey" {
-  key_name   = "PathnexKey"
-  public_key = file("~/.ssh/id_rsa.pub")
+resource "aws_lb_listener" "PathnexListener" {
+    load_balancer_arn = aws_lb.PathnexALB.arn
+    port    = "80"
+    protocol = "HTTP"
+
+    default_action {
+        type = "fixed-response"
+        fixed_response {
+            content_type = "text/plain"
+            message_body = "Pathnex ALB Running"
+            status_code = "200"
+        }
+    }
 }
 
-output "Pathnex_Key_Name" {
-  value = aws_key_pair.PathnexKey.key_name
-}
-
-resource "aws_instance" "PathnexServer" {
-  ami           = "ami-xxxxxxxx"
-  instance_type  = "t2.micro"
-  key_name      = aws_key_pair.PathnexKey.key_name
-}
-
-## Kubernetes - Multi-Container Pod (Sidecar Loggin)
+## Kubernetes - PV + PVC
 
 
 apiVersion: v1
-kind: Pod
+kind: PersistentVolume
 metadata:
-  name: pathnex-sidecar
-
+  name: pathnex-pv
 spec:
-  containers:
-    - name: app
-      image: nginx
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/pathnex
+    type: DirectoryOrCreate
 
-    - name: log-writer
-      image: busybox
-      command: ["sh", "-c", "while true; do echo log entry; sleep 5; done"]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pathnex-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
 
 
-## Shell Script - Count Files in Directory
+## Shell Script - Menu Driven Program
+
 
 #!/bin/bash
 
-DIR="/var/log"
+echo "===== Pathnex Linux Menu ====="
+echo "1) Show date"
+echo "2) Show uptime"
+echo "3) Show logged-in users"
 
-COUNT=$(ls $DIR | wc -l)
+read -p "Choose option: " opt
 
-echo "Total files in $DIR: $COUNT"
+case $opt in
+    1)
+        echo "Current Date:"
+        date
+        ;;
+    2)
+        echo "System Uptime:"
+        uptime
+        ;;
+    3)
+        echo "Logged-in Users:"
+        who
+        ;;
+    *)
+        echo "Invalid choice"
+        ;;
+esac
 
-# Advance Caching
 
-## Jenkins Pipeline - Cache Dependencies
-You will learn how to **cache Maven dependencies with realistic labels**.
+# Automated Testing Pipeline
+
+## Jenkins Pipeline - Run Unit & Integration Tests
+You will learn how to **run multiple test suites and tag reports**.
 
 
 pipeline {
@@ -79,9 +104,8 @@ pipeline {
 
     environment {
         INSTITUTE_NAME = "Pathnex"
-        TEAM = "DevOps"
-        ENV = "staging"
-        MAVEN_OPTS = "-Dmaven.repo.local=$HOME/.m2/repository"
+        TEAM = "QA"
+        ENV = "dev"
     }
 
     stages {
@@ -91,44 +115,59 @@ pipeline {
             }
         }
 
-        stage('Build') {
+        stage('Unit Test') {
             steps {
-                sh '''
-                    echo "Building $INSTITUTE_NAME application"
-                    echo "Environment: $ENV"
-                    echo "Team: $TEAM"
-
-                    mkdir -p "$HOME/.m2/repository"
-                    mvn clean compile
-                '''
+                sh 'mvn test -Dgroup=unit'
             }
+        }
+
+        stage('Integration Test') {
+            steps {
+                sh 'mvn verify -Dgroup=integration'
+            }
+        }
+
+        stage('Report') {
+            steps {
+                sh 'echo "Tests completed for $INSTITUTE_NAME by $TEAM in $ENV environment"'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pathnex pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pathnex pipeline failed!'
         }
     }
 }
 
 
-## GitLab CI - Cache Dependencies
-You will learn how to **cache dependencies in GitLab CI with tags**.
+## GitLab CI - Run Tests
+You will learn how to **run unit and integration tests in GitLab CI**.
 
 
 stages:
-  - build
+  - unit
+  - integration
 
 variables:
   INSTITUTE_NAME: "Pathnex"
-  TEAM: "DevOps"
-  ENV: "staging"
-  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  TEAM: "QA"
+  ENV: "dev"
 
-build:
-  stage: build
+unit-test:
+  stage: unit
   image: maven:3.8.1-jdk-17
-
-  cache:
-    key: "${ENV}-maven-cache"
-    paths:
-      - .m2/repository/
-
   script:
-    - mvn clean compile
-    - echo "Cached dependencies for $INSTITUTE_NAME in $ENV by $TEAM"
+    - mvn test
+    - echo "Unit tests completed for $INSTITUTE_NAME by $TEAM in $ENV"
+
+integration-test:
+  stage: integration
+  image: maven:3.8.1-jdk-17
+  script:
+    - mvn verify
+    - echo "Integration tests completed for $INSTITUTE_NAME by $TEAM in $ENV"
