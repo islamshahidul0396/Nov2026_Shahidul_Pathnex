@@ -1,174 +1,137 @@
-# Day 24 - Template, ALB Listener, PV/PVC, Menu System
+# Day 23 - Tags, EIP, HPA, Kill Process
 
-## Ansible - Deploy Config Using Template
+## Ansible - Add Tags to Users
+
 
 ---
-- name: Deploy Pathnex template
+- name: Create users with comments
   hosts: all
   become: yes
 
-
   tasks:
-    - name: Create config
-      template:
-        src: pathnex.config.j2
-        dest: /etc/pathnex.conf
+    - name: Create Pathnex user
+      user:
+        name: devuser
+        comment: "Pathnex Developer User"
+        state: present
 
 
-## Terraform - ALB Listener
 
-resource "aws_lb_listener" "PathnexListener" {
-    load_balancer_arn = aws_lb.PathnexALB.arn
-    port    = "80"
-    protocol = "HTTP"
+## Terraform - Elastic IP
 
-    default_action {
-        type = "fixed-response"
-        fixed_response {
-            content_type = "text/plain"
-            message_body = "Pathnex ALB Running"
-            status_code = "200"
-        }
+resource "aws_eip" "PathnexEIP" {
+    instance = aws_instance.PathnexEC2.id
+
+    tags = {
+        Name = "Pathnex-EIP"
     }
 }
 
-## Kubernetes - PV + PVC
+## Kubernetes - Horizontal Pod Autoscaler (HPA)
 
-
-apiVersion: v1
-kind: PersistentVolume
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
 metadata:
-  name: pathnex-pv
+    name: pathnex-hpa
 spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /data/pathnex
-    type: DirectoryOrCreate
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: pathnex-deploy
+    minReplicas: 2
+    maxReplicas: 6
+    metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+                type: Utilization
+                averageUtilization: 50
 
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: pathnex-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 500Mi
-
-
-## Shell Script - Menu Driven Program
+## Shell Script - Kill High CPU Process
 
 
 #!/bin/bash
 
-echo "===== Pathnex Linux Menu ====="
-echo "1) Show date"
-echo "2) Show uptime"
-echo "3) Show logged-in users"
+PID=$(ps -eo pid=,pcpu=,comm= --sort=-pcpu | awk 'NR==1 {print $1}')
 
-read -p "Choose option: " opt
+if [ -z "$PID" ]; then
+    echo "No process found"
+    exit 1
+fi
 
-case $opt in
-    1)
-        echo "Current Date:"
-        date
-        ;;
-    2)
-        echo "System Uptime:"
-        uptime
-        ;;
-    3)
-        echo "Logged-in Users:"
-        who
-        ;;
-    *)
-        echo "Invalid choice"
-        ;;
-esac
+echo "Highest CPU consuming process:"
+ps -p "$PID" -o pid,pcpu,comm
+
+read -p "Do you want to kill this process? (y/n): " choice
+
+if [ "$choice" = "y" ]; then
+    kill "$PID"
+    echo "Termination signal sent to PID: $PID"
+else
+    echo "Process not terminated"
+fi
 
 
-# Automated Testing Pipeline
-
-## Jenkins Pipeline - Run Unit & Integration Tests
-You will learn how to **run multiple test suites and tag reports**.
-
+# Docker Integration
+## Jenkins Pipeline - Build Docker Image
+You will learn how to **build and tag Docker images** with proper labels.
 
 pipeline {
     agent any
-
     environment {
         INSTITUTE_NAME = "Pathnex"
-        TEAM = "QA"
-        ENV = "dev"
+        TEAM = "DevOps"
+        ENV = "staging"
+        PROJECT = "WebApp"
     }
-
     stages {
         stage('Checkout') {
             steps {
                 git url: 'https://github.com/Pathnex/sample-java-app.git'
             }
         }
-
-        stage('Unit Test') {
+        stage('Build Docker Image') {
             steps {
-                sh 'mvn test -Dgroup=unit'
+                sh '''
+                docker build -t pathnex/webapp:${ENV}-${BUILD_NUMBER} \
+                --label "INSTITUTE_NAME=$INSTITUTE_NAME" \
+                --label "TEAM=$TEAM" \
+                --label "ENV=$ENV" \
+                --label "PROJECT=$PROJECT" .
+                '''
             }
-        }
-
-        stage('Integration Test') {
-            steps {
-                sh 'mvn verify -Dgroup=integration'
-            }
-        }
-
-        stage('Report') {
-            steps {
-                sh 'echo "Tests completed for $INSTITUTE_NAME by $TEAM in $ENV environment"'
-            }
-        }
-    }
-
-    post {
-        success {
-            echo 'Pathnex pipeline completed successfully!'
-        }
-        failure {
-            echo 'Pathnex pipeline failed!'
         }
     }
 }
 
-
-## GitLab CI - Run Tests
-You will learn how to **run unit and integration tests in GitLab CI**.
+## GitLab CI - Build Docker Image
+You will learn how to **build Docker images in GitLab CI**.
 
 
 stages:
-  - unit
-  - integration
+  - docker-build
 
 variables:
   INSTITUTE_NAME: "Pathnex"
-  TEAM: "QA"
-  ENV: "dev"
+  TEAM: "DevOps"
+  ENV: "staging"
+  PROJECT: "WebApp"
+  DOCKER_HOST: "tcp://docker:2376"
+  DOCKER_TLS_CERTDIR: "/certs"
 
-unit-test:
-  stage: unit
-  image: maven:3.8.1-jdk-17
+docker-build:
+  stage: docker-build
+  image: docker:cli
+  services:
+    - name: docker:dind
+      alias: docker
+
   script:
-    - mvn test
-    - echo "Unit tests completed for $INSTITUTE_NAME by $TEAM in $ENV"
-
-integration-test:
-  stage: integration
-  image: maven:3.8.1-jdk-17
-  script:
-    - mvn verify
-    - echo "Integration tests completed for $INSTITUTE_NAME by $TEAM in $ENV"
-
+    - docker info
+    - |
+      docker build -t pathnex/webapp:${ENV}-${CI_PIPELINE_ID} \
+        --label "INSTITUTE_NAME=$INSTITUTE_NAME" \
+        --label "TEAM=$TEAM" \
+        --label "ENV=$ENV" \
+        --label "PROJECT=$PROJECT" .
